@@ -5,6 +5,7 @@ special-patch
 
 現在の機能：
 - `NULL` を `(NULL)` に置換する
+- プリプロセッサが出力したソースコードに置き換える（`--preprocessor` オプション）
 
 
 How to install
@@ -23,5 +24,5 @@ cargo install --path . --bins --all-features
 How to use
 ----
 ```shell
-cargo run ~/shina-lab/project-ultimate-sanitizer/magma-v1.2/targets/openssl/repo/compile_commands.json
+git -C ../magma-v1.2/targets/openssl/repo reset --hard && cargo run ../magma-v1.2/targets/openssl/repo/compile_commands.json
 ```
