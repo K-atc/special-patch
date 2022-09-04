@@ -24,5 +24,5 @@ cargo install --path . --bins --all-features
 How to use
 ----
 ```shell
-git -C ../magma-v1.2/targets/openssl/repo reset --hard && cargo run ../magma-v1.2/targets/openssl/repo/compile_commands.json
+git -C ../magma-v1.2/targets/openssl/repo reset --hard && cargo run -- --preprocessor ../magma-v1.2/targets/openssl/repo/compile_commands.json
 ```

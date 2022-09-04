@@ -8,6 +8,7 @@ use serde::Deserialize;
 use std::ffi::OsStr;
 use std::fs;
 use std::fs::File;
+use std::io;
 use std::io::BufWriter;
 use std::io::Write;
 use std::path::Path;
@@ -34,38 +35,42 @@ struct CompileCommand {
     file: PathBuf,
 }
 
-fn preprocessor(command: &CompileCommand) -> std::io::Result<()> {
+fn preprocessor(command: &CompileCommand) -> io::Result<()> {
     assert_ne!(command.arguments.len(), 0);
     let mut args = command.arguments.clone();
     struct ReplaceTargetOption {
-        c: usize,
-        o: usize,
+        c: Option<usize>,
+        o: Option<usize>,
     }
-    let replace_target_option: Option<ReplaceTargetOption> =
-        (|args: &Vec<String>| -> Option<ReplaceTargetOption> {
-            match args.iter().position(|v| v == &String::from("-c")) {
-                Some(c) => {
-                    let o = args.iter().position(|v| v == &String::from("-o")).unwrap();
-                    Some(ReplaceTargetOption { c, o })
-                }
-                None => None,
-            }
-        })(&args);
+    let replace_target_option: ReplaceTargetOption = (|args: &Vec<String>| -> ReplaceTargetOption {
+        let o = args.iter().position(|v| v == &String::from("-o"));
+        match args.iter().position(|v| v == &String::from("-c")) {
+            Some(c) => ReplaceTargetOption { c: Some(c), o },
+            None => ReplaceTargetOption { c: None, o },
+        }
+    })(&args);
     #[allow(non_snake_case)]
     let option_E = String::from("-E");
-    if let Some(replace_target_option) = replace_target_option {
-        args[replace_target_option.c] = option_E;
-        args.remove(replace_target_option.o + 1);
-        args.remove(replace_target_option.o);
+    if let Some(o) = replace_target_option.o {
+        args.remove(o + 1);
+        args.remove(o);
+    }
+    if let Some(c) = replace_target_option.c {
+        args[c] = option_E;
     } else {
         args.push(option_E);
     }
-    trace!("{:?}", args);
+    trace!("preprocessor: args={:?}", args);
 
     let output = Command::new(&args[0])
-        .args(&args)
+        .args(&args[1..])
         .current_dir(&command.directory)
         .output()?;
+    if !output.stderr.is_empty() {
+        let mut stdout = io::stdout().lock();
+        stdout.write_all(&output.stderr)?;
+    }
+    assert_ne!(output.stdout.len(), 0);
     let mut patched_file = File::create(&command.file)?;
     patched_file.write_all(&output.stdout)?;
     Ok(())
