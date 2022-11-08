@@ -39,7 +39,9 @@ struct Cli {
 #[allow(dead_code)]
 struct CompileCommand {
     directory: PathBuf,
+    #[serde(default)]
     command: Option<String>,
+    #[serde(default)]
     arguments: Option<Vec<String>>,
     file: PathBuf,
 }
@@ -48,6 +50,7 @@ struct CompileCommand {
 enum Error {
     IoError(io::Error),
     ExitStatusError(ExitStatusError),
+    ShellWordsParseError(shell_words::ParseError),
     CommandFormatError,
 }
 
@@ -65,17 +68,24 @@ impl From<ExitStatusError> for Error {
     }
 }
 
+impl From<shell_words::ParseError> for Error {
+    fn from(error: shell_words::ParseError) -> Self {
+        Error::ShellWordsParseError(error)
+    }
+}
+
 fn preprocessor(command: &CompileCommand) -> Result<()> {
-    let arguments = if let Some(ref arguments) = command.arguments {
+    let mut args = if let Some(ref arguments) = command.arguments {
         arguments.clone()
     } else if let Some(ref command) = command.command {
-        command.split_whitespace().map(|v| v.to_string()).collect()
+        shell_words::split(command)?
     } else {
         return Err(Error::CommandFormatError);
     };
-    assert_ne!(arguments.len(), 0);
+    assert_ne!(args.len(), 0);
+    trace!("preprocessor: args={:?}", args);
 
-    let mut args = arguments.clone();
+    #[derive(Debug)]
     struct ReplaceTargetOption {
         c: Option<usize>,
         o: Option<usize>,
@@ -87,18 +97,22 @@ fn preprocessor(command: &CompileCommand) -> Result<()> {
             None => ReplaceTargetOption { c: None, o },
         }
     })(&args);
+    trace!(
+        "preprocessor: replace_target_option={:?}",
+        replace_target_option
+    );
     #[allow(non_snake_case)]
     let option_E = String::from("-E");
+    if let Some(c) = replace_target_option.c {
+        args[c] = option_E.clone();
+    }
     if let Some(o) = replace_target_option.o {
         args.remove(o + 1);
         args.remove(o);
     }
-    if let Some(c) = replace_target_option.c {
-        args[c] = option_E;
-    } else {
+    if replace_target_option.c.is_none() {
         args.push(option_E);
     }
-    trace!("preprocessor: args={:?}", args);
 
     let output = Command::new(&args[0])
         .args(&args[1..])
@@ -160,7 +174,7 @@ fn main() {
     let _: Vec<()> = compile_commands
         .par_iter()
         .map(|command| {
-            trace!("{:?}", command.file);
+            trace!("file={:?}", command.file);
             if Some("c") != command.file.extension().and_then(OsStr::to_str) {
                 return;
             }
