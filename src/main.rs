@@ -39,8 +39,8 @@ struct Cli {
 #[allow(dead_code)]
 struct CompileCommand {
     directory: PathBuf,
-    // command: Option<String>,
-    arguments: Vec<String>,
+    command: Option<String>,
+    arguments: Option<Vec<String>>,
     file: PathBuf,
 }
 
@@ -48,6 +48,7 @@ struct CompileCommand {
 enum Error {
     IoError(io::Error),
     ExitStatusError(ExitStatusError),
+    CommandFormatError,
 }
 
 type Result<T> = std::result::Result<T, Error>;
@@ -65,8 +66,16 @@ impl From<ExitStatusError> for Error {
 }
 
 fn preprocessor(command: &CompileCommand) -> Result<()> {
-    assert_ne!(command.arguments.len(), 0);
-    let mut args = command.arguments.clone();
+    let arguments = if let Some(ref arguments) = command.arguments {
+        arguments.clone()
+    } else if let Some(ref command) = command.command {
+        command.split_whitespace().map(|v| v.to_string()).collect()
+    } else {
+        return Err(Error::CommandFormatError);
+    };
+    assert_ne!(arguments.len(), 0);
+
+    let mut args = arguments.clone();
     struct ReplaceTargetOption {
         c: Option<usize>,
         o: Option<usize>,
@@ -103,6 +112,7 @@ fn preprocessor(command: &CompileCommand) -> Result<()> {
     assert_ne!(output.stdout.len(), 0);
     let mut patched_file = File::create(&command.file)?;
     patched_file.write_all(&output.stdout)?;
+
     Ok(())
 }
 
@@ -136,8 +146,8 @@ fn main() {
         for command in compile_commands.iter() {
             if done_list.contains(&command.file) {
                 warn!(
-                    "Another command for same file. Skip: file={:?}, arguments={:?}",
-                    command.file, command.arguments
+                    "Another command for same file. Skip: file={:?}, arguments={:?}, command={:?}",
+                    command.file, command.arguments, command.command
                 );
                 continue;
             }
