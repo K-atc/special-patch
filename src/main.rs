@@ -175,15 +175,18 @@ fn main() {
         .par_iter()
         .map(|command| {
             trace!("file={:?}", command.file);
-            if Some("c") != command.file.extension().and_then(OsStr::to_str) {
-                return;
-            }
+            match command.file.extension().and_then(OsStr::to_str) {
+                Some("c") | Some("cpp") | Some("cc") => (),
+                _ => return,
+            };
 
+            // Apply preprocessor
             if args.preprocessor {
                 preprocessor(command)
                     .expect(format!("Failed to preprocess {:?}", command).as_str());
             }
 
+            // Insert include file
             if let Some(ref header_name) = args.include {
                 let orig = File::open(&command.file)
                     .expect(format!("Failed to open file: {:?}", command.file).as_str());
@@ -203,9 +206,16 @@ fn main() {
                     .expect("Failed to write patched code");
             }
 
+            // Wrap NULL with brackets
             {
                 let re = Regex::new(r"([^\w^\(])NULL([^\w^\)])").unwrap();
                 apply(&re, &command.file, "$1(NULL)$2");
+            }
+
+            // Wipeout constexpr
+            {
+                let re = Regex::new(r"constexpr\s").unwrap();
+                apply(&re, &command.file, "");
             }
         })
         .collect();
