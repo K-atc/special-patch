@@ -387,7 +387,7 @@ checksum = "24188a676b6ae68c3b2cb3a01be17fbf7240ce009799bb56d5b1409051e78fde"
 
 [[package]]
 name = "special-patch"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cargo-husky",
  "clap",

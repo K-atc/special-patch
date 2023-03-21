@@ -2,7 +2,7 @@
 
 use clap::Parser;
 #[allow(unused_imports)]
-use log::{info, trace, warn};
+use log::{error, info, trace, warn};
 #[allow(unused_imports)]
 use rayon::prelude::*;
 use regex::Regex;
@@ -25,7 +25,9 @@ use std::process::ExitStatusError;
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
-    compile_commands: String,
+    #[clap(long = "compile-commands", help = "Path to compile_commands.json")]
+    compile_commands: PathBuf,
+    files: Vec<PathBuf>,
     #[clap(
         long = "preprocessor",
         help = "Replace original source code with preprocessed one"
@@ -141,6 +143,19 @@ fn apply(re: &Regex, path: &Path, change_to: &str) {
     }
 }
 
+trait FilesTobePatched {
+    fn is_to_be_patched(&self) -> bool;
+}
+
+impl FilesTobePatched for PathBuf {
+    fn is_to_be_patched(&self) -> bool {
+        match self.extension().and_then(OsStr::to_str) {
+            Some("c") | Some("cpp") | Some("cc") => true,
+            _ => false,
+        }
+    }
+}
+
 fn main() {
     env_logger::init();
 
@@ -171,52 +186,76 @@ fn main() {
         unduplicated_compile_commands
     };
 
-    let _: Vec<()> = compile_commands
-        .par_iter()
-        .map(|command| {
-            trace!("file={:?}", command.file);
-            match command.file.extension().and_then(OsStr::to_str) {
-                Some("c") | Some("cpp") | Some("cc") => (),
-                _ => return,
-            };
+    // Execute compile_commands.json-depend process
+    {
+        let result: Vec<_> = compile_commands
+            .par_iter()
+            .map(|command| -> Result<()> {
+                trace!("command.file={:?}", command.file);
+                if !command.file.is_to_be_patched() {
+                    return Ok(());
+                }
 
-            // Apply preprocessor
-            if args.preprocessor {
-                preprocessor(command)
-                    .expect(format!("Failed to preprocess {:?}", command).as_str());
-            }
+                // Apply preprocessor
+                if args.preprocessor {
+                    preprocessor(command)?;
+                }
 
-            // Insert include file
-            if let Some(ref header_name) = args.include {
-                let orig = File::open(&command.file)
-                    .expect(format!("Failed to open file: {:?}", command.file).as_str());
-                let mut reader = BufReader::new(orig);
-                let mut buf = Vec::new();
-                reader
-                    .read_to_end(&mut buf)
-                    .expect(format!("Failed to read file: {:?}", command.file).as_str());
+                Ok(())
+            })
+            .collect();
+        let _ = result.iter().map(|v| {
+            v.as_ref().map_err(|err| {
+                error!(
+                    "Failed to preprocess files in compile_commands.json: {:?}",
+                    err
+                )
+            })
+        });
+        let _ = result.iter().map(|v| {
+            v.as_ref()
+                .expect("Failed to process files in compile_commands.json")
+        });
+    }
 
-                let file = File::create(&command.file)
-                    .expect(format!("Failed to create file: {:?}", command.file).as_str());
-                let mut writer = BufWriter::new(file);
-                write!(writer, "#include <{}>\n", header_name)
-                    .expect("Failed to write patched code");
-                writer
-                    .write_all(buf.as_slice())
-                    .expect("Failed to write patched code");
-            }
-
-            // Wrap NULL with brackets
-            {
-                let re = Regex::new(r"([^\w^\(])NULL([^\w^\)])").unwrap();
-                apply(&re, &command.file, "$1(NULL)$2");
-            }
-
-            // Wipeout constexpr
-            {
-                let re = Regex::new(r"constexpr\s").unwrap();
-                apply(&re, &command.file, "");
-            }
-        })
+    let files_from_compile_commands: Vec<PathBuf> = compile_commands
+        .iter()
+        .map(|v| v.file.clone())
+        .filter(|v| v.is_to_be_patched())
         .collect();
+
+    for file_path in files_from_compile_commands.iter().chain(args.files.iter()) {
+        trace!("file_path={:?}", file_path);
+
+        // Insert include file
+        if let Some(ref header_name) = args.include {
+            let orig = File::open(file_path)
+                .expect(format!("Failed to open file: {:?}", file_path).as_str());
+            let mut reader = BufReader::new(orig);
+            let mut buf = Vec::new();
+            reader
+                .read_to_end(&mut buf)
+                .expect(format!("Failed to read file: {:?}", file_path).as_str());
+
+            let file = File::create(&file_path)
+                .expect(format!("Failed to create file: {:?}", file_path).as_str());
+            let mut writer = BufWriter::new(file);
+            write!(writer, "#include <{}>\n", header_name).expect("Failed to write patched code");
+            writer
+                .write_all(buf.as_slice())
+                .expect("Failed to write patched code");
+        }
+
+        // Wrap NULL with brackets
+        {
+            let re = Regex::new(r"([^\w^\(])NULL([^\w^\)])").unwrap();
+            apply(&re, file_path, "$1(NULL)$2");
+        }
+
+        // Wipeout constexpr
+        {
+            let re = Regex::new(r"constexpr\s").unwrap();
+            apply(&re, file_path, "");
+        }
+    }
 }
