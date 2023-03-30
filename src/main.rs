@@ -143,12 +143,25 @@ fn apply(re: &Regex, path: &Path, change_to: &str) {
     }
 }
 
-trait FilesTobePatched {
+trait Util {
     fn is_to_be_patched(&self) -> bool;
+    fn is_header_file(&self) -> bool;
+    fn is_source_file(&self) -> bool;
 }
 
-impl FilesTobePatched for PathBuf {
+impl Util for PathBuf {
     fn is_to_be_patched(&self) -> bool {
+        self.is_header_file() || self.is_source_file()
+    }
+
+    fn is_header_file(&self) -> bool {
+        match self.extension().and_then(OsStr::to_str) {
+            Some("h") | Some("hpp") => true,
+            _ => false,
+        }
+    }
+
+    fn is_source_file(&self) -> bool {
         match self.extension().and_then(OsStr::to_str) {
             Some("c") | Some("cpp") | Some("cc") => true,
             _ => false,
@@ -192,7 +205,7 @@ fn main() {
             .par_iter()
             .map(|command| -> Result<()> {
                 trace!("command.file={:?}", command.file);
-                if !command.file.is_to_be_patched() {
+                if !command.file.is_source_file() {
                     return Ok(());
                 }
 
@@ -252,10 +265,23 @@ fn main() {
             apply(&re, file_path, "$1(NULL)$2");
         }
 
-        // Wipeout constexpr
+        // Wipeout constexpr functions
         {
-            let re = Regex::new(r"constexpr\s").unwrap();
-            apply(&re, file_path, "");
+            // Un-constexpr functions
+            let re = Regex::new(r"constexpr\s(.*(\r)?(\n)?(\s*)\{)").unwrap();
+            apply(&re, file_path, "$1");
+
+            // Un-constexpr objects
+            if file_path.is_source_file() {
+                let re = Regex::new(r"static constexpr\s(.*;)").unwrap();
+                apply(&re, file_path, "$1");
+            }
+        }
+
+        // Escape single quotes in const char for yaml string
+        {
+            let re = Regex::new("\"(.*?)\\\\?'(.+?)\\\\?'(.*?)\"").unwrap();
+            apply(&re, file_path, "\"$1''$2''$3\"");
         }
     }
 }
