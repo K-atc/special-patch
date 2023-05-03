@@ -133,11 +133,13 @@ fn preprocessor(command: &CompileCommand) -> Result<()> {
 }
 
 fn apply(re: &Regex, path: &Path, change_to: &str) {
-    let original = fs::read_to_string(path).expect("Failed to read");
+    let original = fs::read_to_string(path)
+        .expect(format!("Failed to read file: {}", path.display()).as_str());
     let patched = re.replace_all(original.as_str(), change_to);
 
     {
-        let file = File::create(path).expect(format!("Failed to open file: {:?}", path).as_str());
+        let file =
+            File::create(path).expect(format!("Failed to open file: {}", path.display()).as_str());
         let mut writer = BufWriter::new(file);
         write!(writer, "{}", patched).expect("Failed to write patched code");
     }
