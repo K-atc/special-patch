@@ -5,6 +5,7 @@ use clap::Parser;
 use log::{error, info, trace, warn};
 #[allow(unused_imports)]
 use rayon::prelude::*;
+use regex::Captures;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::HashSet;
@@ -17,7 +18,6 @@ use std::io::BufReader;
 use std::io::BufWriter;
 use std::io::Read;
 use std::io::Write;
-use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::ExitStatusError;
@@ -132,16 +132,45 @@ fn preprocessor(command: &CompileCommand) -> Result<()> {
     Ok(())
 }
 
-fn apply(re: &Regex, path: &Path, change_to: &str) {
-    let original = fs::read_to_string(path)
-        .expect(format!("Failed to read file: {}", path.display()).as_str());
-    let patched = re.replace_all(original.as_str(), change_to);
+fn open_file(path: &PathBuf) -> String {
+    fs::read_to_string(path).expect(format!("Failed to read file: {}", path.display()).as_str())
+}
 
-    {
+fn save_file(path: &PathBuf, patched: Option<String>) {
+    if let Some(patched) = patched {
         let file =
             File::create(path).expect(format!("Failed to open file: {}", path.display()).as_str());
         let mut writer = BufWriter::new(file);
         write!(writer, "{}", patched).expect("Failed to write patched code");
+    }
+}
+
+fn apply(
+    re: &Regex,
+    original: String,
+    change_to: &str,
+    filter: fn(Option<Captures>) -> bool,
+) -> Option<String> {
+    if filter(re.captures(original.as_str())) {
+        return None;
+    }
+    let patched = re.replace_all(original.as_str(), change_to);
+    Some(String::from(patched))
+}
+
+fn no_check(caps: Option<Captures>) -> bool {
+    if caps.is_none() {
+        return true;
+    }
+    false
+}
+
+fn double_quote_exists(caps: Option<Captures>) -> bool {
+    if let Some(caps) = caps {
+        println!("{:?}", caps);
+        caps.get(1).unwrap().as_str().contains("\"") || caps.get(3).unwrap().as_str().contains("\"")
+    } else {
+        true
     }
 }
 
@@ -233,7 +262,7 @@ fn main() {
         });
     }
 
-    let files_from_compile_commands: Vec<PathBuf> = compile_commands
+    let files_from_compile_commands: HashSet<PathBuf> = compile_commands
         .iter()
         .map(|v| v.file.clone())
         .filter(|v| v.is_to_be_patched())
@@ -264,26 +293,69 @@ fn main() {
         // Wrap NULL with brackets
         {
             let re = Regex::new(r"([^\w^\(])NULL([^\w^\)])").unwrap();
-            apply(&re, file_path, "$1(NULL)$2");
+            let patched = apply(&re, open_file(file_path), "$1(NULL)$2", no_check);
+            save_file(file_path, patched);
         }
 
         // Wipeout constexpr functions
         {
             // Un-constexpr functions
             let re = Regex::new(r"constexpr\s(.*(\r)?(\n)?(\s*)\{)").unwrap();
-            apply(&re, file_path, "$1");
+            let patched = apply(&re, open_file(file_path), "$1", no_check);
+            save_file(file_path, patched);
 
             // Un-constexpr objects
             if file_path.is_source_file() {
                 let re = Regex::new(r"static constexpr\s(.*;)").unwrap();
-                apply(&re, file_path, "$1");
+                let patched = apply(&re, open_file(file_path), "$1", no_check);
+                save_file(file_path, patched);
             }
         }
 
         // Escape single quotes in const char for yaml string
         {
-            let re = Regex::new("\"(.*?)\\\\?'(.+?)\\\\?'(.*?)\"").unwrap();
-            apply(&re, file_path, "\"$1''$2''$3\"");
+            let patched = escape_single_quotes_in_const_char(open_file(file_path));
+            save_file(file_path, patched);
         }
+    }
+}
+
+fn escape_single_quotes_in_const_char(original: String) -> Option<String> {
+    let re = Regex::new("\"(.*?)\\\\?'([^\"\n]{2,}?)\\\\?'(.*?)\"").unwrap();
+    apply(&re, original, "\"$1''$2''$3\"", double_quote_exists)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    macro_rules! test_case {
+        ($original:expr, $patched:expr) => {
+            assert_eq!(
+                escape_single_quotes_in_const_char(String::from($original)),
+                $patched
+            );
+        };
+    }
+
+    #[test]
+    fn single_quote() {
+        test_case!(
+            "let test = \"test 'ab'.\"",
+            Some(String::from("let test = \"test ''ab''.\""))
+        );
+    }
+
+    #[test]
+    fn single_quote_confusion() {
+        test_case!("{\"text\", OPT_TEXT, '-', \"Print as text\"}", None);
+        test_case!(
+            "{\"select\", OPT_SELECT_NAME, 's', \"Select a single algorithm\"},",
+            None
+        );
+        test_case!("{ OPT_SECTION_STR, 1, '-', \"Random state\" \" options:\n\" }, {\"rand\", OPT_R_RAND, 's', \"Load the given file(s) into the random number generator\"}, {\"writerand\", OPT_R_WRITERAND, '>', \"Write random data to the specified file\"}", None);
+
+        test_case!("\"\n'abc'\"", None);
+        test_case!("\"'ab\nc'\"", None);
     }
 }
