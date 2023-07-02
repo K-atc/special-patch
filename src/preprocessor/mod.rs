@@ -57,9 +57,10 @@ impl Preprocessor {
             match Self::parse_line(line)? {
                 Line::ExpandedHeader(ref header) => {
                     current_source_context = SourceContext::ExpandedHeader(header.clone());
-                    if header.is_system() {
-                        continue;
-                    }
+                    // `error: invalid line marker flag '2': cannot pop empty include stack` を避けるため、出力はする
+                    // if header.is_system() {
+                    //     continue;
+                    // }
                 }
                 Line::IncludedHeader(ref header) => {
                     if let SourceContext::ExpandedHeader(ref last_expand) = current_source_context {
