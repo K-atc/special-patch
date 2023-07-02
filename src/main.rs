@@ -1,5 +1,9 @@
 #![feature(exit_status_error)]
 
+pub mod preprocessor;
+
+use preprocessor::Preprocessor;
+
 use clap::Parser;
 #[allow(unused_imports)]
 use log::{error, info, trace, warn};
@@ -116,6 +120,8 @@ fn preprocessor(command: &CompileCommand) -> Result<()> {
         args.push(option_E);
     }
 
+    args.push(String::from("-dI"));
+
     let output = Command::new(&args[0])
         .args(&args[1..])
         .current_dir(&command.directory)
@@ -125,9 +131,12 @@ fn preprocessor(command: &CompileCommand) -> Result<()> {
         stdout.write_all(&output.stderr)?;
     }
     output.status.exit_ok()?;
-    assert_ne!(output.stdout.len(), 0);
+
+    let patched = String::from_utf8(output.stdout).expect("Invalid UTF-8 sequence");
+    assert_ne!(patched.len(), 0);
+    let patched = Preprocessor::preprocess(&patched).unwrap();
     let mut patched_file = File::create(&command.file)?;
-    patched_file.write_all(&output.stdout)?;
+    patched_file.write_all(&patched.as_bytes())?;
 
     Ok(())
 }
