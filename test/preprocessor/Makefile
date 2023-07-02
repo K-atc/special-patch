@@ -4,7 +4,7 @@ all: $(TARGET)
 	@
 
 %:%.c
-	$(CC) -E -dI $^ -o $@.E
+	$(CC) -E -dI -C $^ -o $@.E
 	$(CC) $^ -o $@
 
 %.expected:%.E.expected

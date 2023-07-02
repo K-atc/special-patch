@@ -120,7 +120,8 @@ fn preprocessor(command: &CompileCommand) -> Result<()> {
         args.push(option_E);
     }
 
-    args.push(String::from("-dI"));
+    args.push(String::from("-dI")); // Preserve include statements
+    args.push(String::from("-C")); // Preserve comments
 
     let output = Command::new(&args[0])
         .args(&args[1..])

@@ -23,7 +23,6 @@ pub enum Line {
 }
 
 enum SourceContext {
-    IncludedHeader(IncludedHeader),
     ExpandedHeader(ExpandedHeader),
     Main,
 }
@@ -149,6 +148,7 @@ mod tests {
         if result != exptected {
             println!("{}", difference::Changeset::new(&exptected, &result, "\n"));
         }
+        println!("{}", result);
         assert!(result == exptected);
     }
 
