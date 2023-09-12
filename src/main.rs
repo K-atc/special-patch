@@ -324,10 +324,24 @@ fn main() {
 
         // Escape single quotes in const char for yaml string
         {
-            let patched = escape_single_quotes_in_const_char(open_file(file_path));
-            save_file(file_path, patched);
+            // Case: ... 'abc' ...
+            {
+                let patched = escape_single_quotes_in_const_char(open_file(file_path));
+                save_file(file_path, patched);
+            }
+
+            // Case: ... can't ...
+            {
+                let patched = escape_single_quote_in_const_char(open_file(file_path));
+                save_file(file_path, patched);
+            }
         }
     }
+}
+
+fn escape_single_quote_in_const_char(original: String) -> Option<String> {
+    let re = Regex::new("\"(.*)n't (.*)\"").unwrap();
+    apply(&re, original, "\"${1}n''t ${2}\"", no_check)
 }
 
 fn escape_single_quotes_in_const_char(original: String) -> Option<String> {
@@ -340,32 +354,43 @@ mod tests {
     use super::*;
 
     macro_rules! test_case {
-        ($original:expr, $patched:expr) => {
-            assert_eq!(
-                escape_single_quotes_in_const_char(String::from($original)),
-                $patched
-            );
+        ($func:expr, $original:expr, $patched:expr) => {
+            assert_eq!($func(String::from($original)), $patched);
         };
     }
 
     #[test]
-    fn single_quote() {
+    fn single_quote_should_escape() {
         test_case!(
+            escape_single_quotes_in_const_char,
             "let test = \"test 'ab'.\"",
             Some(String::from("let test = \"test ''ab''.\""))
+        );
+
+        test_case!(
+            escape_single_quote_in_const_char,
+            "\"Can't stop typing.\"",
+            Some(String::from("\"Can''t stop typing.\""))
         );
     }
 
     #[test]
-    fn single_quote_confusion() {
-        test_case!("{\"text\", OPT_TEXT, '-', \"Print as text\"}", None);
+    fn single_quote_should_not_escape() {
         test_case!(
+            escape_single_quotes_in_const_char,
+            "{\"text\", OPT_TEXT, '-', \"Print as text\"}",
+            None
+        );
+        test_case!(
+            escape_single_quotes_in_const_char,
             "{\"select\", OPT_SELECT_NAME, 's', \"Select a single algorithm\"},",
             None
         );
-        test_case!("{ OPT_SECTION_STR, 1, '-', \"Random state\" \" options:\n\" }, {\"rand\", OPT_R_RAND, 's', \"Load the given file(s) into the random number generator\"}, {\"writerand\", OPT_R_WRITERAND, '>', \"Write random data to the specified file\"}", None);
+        test_case!(escape_single_quotes_in_const_char, "{ OPT_SECTION_STR, 1, '-', \"Random state\" \" options:\n\" }, {\"rand\", OPT_R_RAND, 's', \"Load the given file(s) into the random number generator\"}, {\"writerand\", OPT_R_WRITERAND, '>', \"Write random data to the specified file\"}", None);
 
-        test_case!("\"\n'abc'\"", None);
-        test_case!("\"'ab\nc'\"", None);
+        test_case!(escape_single_quotes_in_const_char, "\"\n'abc'\"", None);
+        test_case!(escape_single_quotes_in_const_char, "\"'ab\nc'\"", None);
+
+        test_case!(escape_single_quotes_in_const_char, "\"'ab\nc'\"", None);
     }
 }
