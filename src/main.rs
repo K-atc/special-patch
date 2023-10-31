@@ -39,6 +39,8 @@ struct Cli {
     preprocessor: bool,
     #[clap(long = "include", help = "Add include directive on the top of files")]
     include: Option<String>,
+    #[clap(long = "ignore", help = "Ignore directory while process")]
+    ignore: Vec<PathBuf>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -223,22 +225,36 @@ fn main() {
     assert!(compile_commands.len() > 0);
 
     // Filter out commands for same file
-    let compile_commands = {
-        let mut unduplicated_compile_commands = Vec::new();
-        let mut done_list = HashSet::new();
-        for command in compile_commands.iter() {
-            if done_list.contains(&command.file) {
-                warn!(
+    let compile_commands =
+        {
+            let mut unduplicated_compile_commands = Vec::new();
+            let mut done_list = HashSet::new();
+            'command: for command in compile_commands.iter() {
+                if done_list.contains(&command.file) {
+                    trace!(
                     "Another command for same file. Skip: file={:?}, arguments={:?}, command={:?}",
                     command.file, command.arguments, command.command
                 );
-                continue;
+                    continue 'command;
+                }
+                for ignore_path in args.ignore.iter() {
+                    if command
+                        .file
+                        .as_path()
+                        .strip_prefix(&command.directory)
+                        .unwrap()
+                        .starts_with(ignore_path)
+                    {
+                        trace!("Ignore command: file={:?}", command.file);
+                        continue 'command;
+                    }
+                }
+                done_list.insert(&command.file);
+                unduplicated_compile_commands.push(command);
             }
-            done_list.insert(&command.file);
-            unduplicated_compile_commands.push(command);
-        }
-        unduplicated_compile_commands
-    };
+            unduplicated_compile_commands
+        };
+    info!("Total #commands: {}", compile_commands.len());
 
     // Execute compile_commands.json-depend process
     {
@@ -278,65 +294,76 @@ fn main() {
         .filter(|v| v.is_to_be_patched())
         .collect();
 
-    for file_path in files_from_compile_commands.iter().chain(args.files.iter()) {
-        trace!("file_path={:?}", file_path);
+    let target_files: Vec<&PathBuf> = files_from_compile_commands
+        .iter()
+        .chain(args.files.iter())
+        .collect();
+    let result: Vec<_> = target_files
+        .par_iter()
+        .map(|file_path| -> Result<()> {
+            trace!("file_path={:?}", file_path);
+            let error_message = format!("Failed to operate file: {:?}", file_path);
 
-        // Insert include file
-        if let Some(ref header_name) = args.include {
-            let orig = File::open(file_path)
-                .expect(format!("Failed to open file: {:?}", file_path).as_str());
-            let mut reader = BufReader::new(orig);
-            let mut buf = Vec::new();
-            reader
-                .read_to_end(&mut buf)
-                .expect(format!("Failed to read file: {:?}", file_path).as_str());
+            // Insert include file
+            if let Some(ref header_name) = args.include {
+                let orig = File::open(file_path).expect(error_message.as_str());
+                let mut reader = BufReader::new(orig);
+                let mut buf = Vec::new();
+                reader.read_to_end(&mut buf).expect(error_message.as_str());
 
-            let file = File::create(&file_path)
-                .expect(format!("Failed to create file: {:?}", file_path).as_str());
-            let mut writer = BufWriter::new(file);
-            write!(writer, "#include <{}>\n", header_name).expect("Failed to write patched code");
-            writer
-                .write_all(buf.as_slice())
-                .expect("Failed to write patched code");
-        }
+                let file = File::create(&file_path).expect(error_message.as_str());
+                let mut writer = BufWriter::new(file);
+                write!(writer, "#include <{}>\n", header_name)
+                    .expect("Failed to add include directive");
+                writer
+                    .write_all(buf.as_slice())
+                    .expect("Failed to write patched code");
+            }
 
-        // Wrap NULL with brackets
-        {
-            let re = Regex::new(r"([^\w^\(])NULL([^\w^\)])").unwrap();
-            let patched = apply(&re, open_file(file_path), "$1(NULL)$2", no_check);
-            save_file(file_path, patched);
-        }
+            // Wrap NULL with brackets
+            {
+                let re = Regex::new(r"([^\w^\(])NULL([^\w^\)])").unwrap();
+                let patched = apply(&re, open_file(file_path), "$1(NULL)$2", no_check);
+                save_file(file_path, patched);
+            }
 
-        // Wipeout constexpr functions
-        {
-            // Un-constexpr functions
-            let re = Regex::new(r"constexpr\s(.*(\r)?(\n)?(\s*)\{)").unwrap();
-            let patched = apply(&re, open_file(file_path), "$1", no_check);
-            save_file(file_path, patched);
-
-            // Un-constexpr objects
-            if file_path.is_source_file() {
-                let re = Regex::new(r"static constexpr\s(.*;)").unwrap();
+            // Wipeout constexpr functions
+            {
+                // Un-constexpr functions
+                let re = Regex::new(r"constexpr\s(.*(\r)?(\n)?(\s*)\{)").unwrap();
                 let patched = apply(&re, open_file(file_path), "$1", no_check);
                 save_file(file_path, patched);
-            }
-        }
 
-        // Escape single quotes in const char for yaml string
-        {
-            // Case: ... 'abc' ...
-            {
-                let patched = escape_single_quotes_in_const_char(open_file(file_path));
-                save_file(file_path, patched);
+                // Un-constexpr objects
+                if file_path.is_source_file() {
+                    let re = Regex::new(r"static constexpr\s(.*;)").unwrap();
+                    let patched = apply(&re, open_file(file_path), "$1", no_check);
+                    save_file(file_path, patched);
+                }
             }
 
-            // Case: ... can't ...
+            // Escape single quotes in const char for yaml string
             {
-                let patched = escape_single_quote_in_const_char(open_file(file_path));
-                save_file(file_path, patched);
+                // Case: ... 'abc' ...
+                {
+                    let patched = escape_single_quotes_in_const_char(open_file(file_path));
+                    save_file(file_path, patched);
+                }
+
+                // Case: ... can't ...
+                {
+                    let patched = escape_single_quote_in_const_char(open_file(file_path));
+                    save_file(file_path, patched);
+                }
             }
-        }
-    }
+
+            Ok(())
+        })
+        .collect();
+    let _ = result.iter().map(|v| {
+        v.as_ref()
+            .map_err(|err| error!("Failed to process file: {:?}", err))
+    });
 }
 
 fn escape_single_quote_in_const_char(original: String) -> Option<String> {
